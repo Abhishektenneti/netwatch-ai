@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+.venv/
+venv/
+.env
+
+# Java
+*.class
+*.jar
+*.war
+target/
+build/
+.gradle/
+!gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# MLflow
+mlruns/
+
+# Logs
+*.log
+logs/
+
+# Claude Code
+.claude/
+
+# pytest cache
+.pytest_cache/

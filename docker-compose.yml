@@ -1,0 +1,168 @@
+version: "3.9"
+
+services:
+  # --- Infrastructure ---
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - netwatch
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    networks:
+      - netwatch
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - kafka
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      "
+      echo 'Waiting for Kafka to be ready...'
+      cub kafka-ready -b kafka:9092 1 60
+
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 \
+        --topic raw-events --partitions 6 --replication-factor 1
+
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 \
+        --topic processed-events --partitions 6 --replication-factor 1
+
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 \
+        --topic anomaly-events --partitions 3 --replication-factor 1
+
+      kafka-topics --create --if-not-exists --bootstrap-server kafka:9092 \
+        --topic explained-events --partitions 3 --replication-factor 1
+
+      echo 'Topics created.'
+      "
+    networks:
+      - netwatch
+
+  qdrant:
+    image: qdrant/qdrant:v1.8.4
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - netwatch
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.12.1
+    ports:
+      - "5000:5000"
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow/mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow
+    networks:
+      - netwatch
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - netwatch
+
+  # --- Application Services ---
+
+  simulator:
+    build:
+      context: ./simulator
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - kafka-init
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: raw-events
+      EVENT_RATE_PER_SEC: 10
+    networks:
+      - netwatch
+
+  processor:
+    build:
+      context: ./processor
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - kafka-init
+      - qdrant
+      - mlflow
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6334
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8081:8081"
+    networks:
+      - netwatch
+
+  explainer:
+    build:
+      context: ./explainer
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - kafka-init
+      - ollama
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2
+    networks:
+      - netwatch
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    depends_on:
+      - kafka
+      - processor
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      QDRANT_HOST: qdrant
+      QDRANT_PORT: 6334
+    networks:
+      - netwatch
+
+networks:
+  netwatch:
+    driver: bridge
+
+volumes:
+  qdrant-data:
+  mlflow-data:
+  ollama-data:

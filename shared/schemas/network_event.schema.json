@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NetworkEvent",
+  "description": "Raw network event emitted by the simulator",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "device_id",
+    "src_ip",
+    "dst_ip",
+    "protocol",
+    "bytes_sent",
+    "bytes_received",
+    "packets",
+    "duration_ms"
+  ],
+  "properties": {
+    "event_id": { "type": "string", "format": "uuid" },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "device_id": { "type": "string" },
+    "src_ip": { "type": "string", "format": "ipv4" },
+    "dst_ip": { "type": "string", "format": "ipv4" },
+    "src_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "dst_port": { "type": "integer", "minimum": 0, "maximum": 65535 },
+    "protocol": { "type": "string", "enum": ["TCP", "UDP", "ICMP", "DNS", "HTTP", "HTTPS"] },
+    "bytes_sent": { "type": "integer", "minimum": 0 },
+    "bytes_received": { "type": "integer", "minimum": 0 },
+    "packets": { "type": "integer", "minimum": 1 },
+    "duration_ms": { "type": "integer", "minimum": 0 },
+    "flags": { "type": "array", "items": { "type": "string" } }
+  }
+}
