@@ -1,0 +1,122 @@
+name: Claude Implements Issue
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  implement:
+    if: github.event.label.name == 'claude-enhancement' || github.event.label.name == 'claude-bug'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+
+      - name: Move issue to In Progress on project board
+        if: vars.PROJECT_NUMBER != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GH_PROJECT_TOKEN }}
+          script: |
+            const projectNumber = parseInt(process.env.PROJECT_NUMBER);
+            const owner = context.repo.owner;
+
+            const projectQuery = `
+              query($owner: String!, $number: Int!) {
+                user(login: $owner) {
+                  projectV2(number: $number) {
+                    id
+                    fields(first: 20) {
+                      nodes {
+                        ... on ProjectV2SingleSelectField {
+                          id name
+                          options { id name }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `;
+
+            const { user } = await github.graphql(projectQuery, { owner, number: projectNumber });
+            const project = user.projectV2;
+            const statusField = project.fields.nodes.find(f => f.name === 'Status');
+            const inProgressOption = statusField?.options.find(o => o.name === 'In Progress');
+
+            const addMutation = `
+              mutation($projectId: ID!, $contentId: ID!) {
+                addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+                  item { id }
+                }
+              }
+            `;
+            const { addProjectV2ItemById } = await github.graphql(addMutation, {
+              projectId: project.id,
+              contentId: context.payload.issue.node_id,
+            });
+
+            if (statusField && inProgressOption) {
+              const updateMutation = `
+                mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: $projectId, itemId: $itemId, fieldId: $fieldId,
+                    value: { singleSelectOptionId: $optionId }
+                  }) { projectV2Item { id } }
+                }
+              `;
+              await github.graphql(updateMutation, {
+                projectId: project.id,
+                itemId: addProjectV2ItemById.item.id,
+                fieldId: statusField.id,
+                optionId: inProgressOption.id,
+              });
+            }
+        env:
+          PROJECT_NUMBER: ${{ vars.PROJECT_NUMBER }}
+
+      - name: Mark issue as being implemented
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['claude-implementing'],
+            });
+
+      - name: Implement with Claude Code
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            Implement GitHub issue #${{ github.event.issue.number }} in this repository.
+
+            Title: ${{ github.event.issue.title }}
+            Type: ${{ github.event.label.name }}
+
+            Description:
+            ${{ github.event.issue.body }}
+
+            Steps to follow:
+            1. Create a branch named "issue-${{ github.event.issue.number }}-<slug>" where <slug> is a short kebab-case version of the title (max 40 chars, lowercase, no special chars)
+            2. Explore the codebase to understand context relevant to this issue
+            3. Implement the changes, following existing code style and conventions
+            4. Commit with a clear message
+            5. Push the branch
+            6. Open a pull request to main with:
+               - Title: "${{ github.event.label.name }}: ${{ github.event.issue.title }}"
+               - Body containing a brief summary of changes and "Closes #${{ github.event.issue.number }}"
