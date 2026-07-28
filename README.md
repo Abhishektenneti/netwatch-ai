@@ -1,77 +1,145 @@
 # NetWatch AI
 
-An AI-powered network anomaly detection system that ingests real-time network events, detects suspicious behavior using machine learning, and generates human-readable explanations via a local LLM.
+NetWatch AI is an event-driven network anomaly detection prototype. It generates synthetic network telemetry, scores each device with an Isolation Forest model, enriches suspicious events with a local language model, and exposes alerts through a REST API.
+
+## What it demonstrates
+
+- Streaming network events through Apache Kafka
+- Per-device anomaly detection with a pure-Java Isolation Forest
+- Rolling behavioral statistics and device embeddings
+- Similar-device search with Qdrant
+- Model experiment tracking with MLflow
+- Local anomaly explanations through Ollama
+- A multi-service development stack with Docker Compose
 
 ## Architecture
 
-```
-Simulator ──► raw-events (Kafka) ──► Processor ──► processed-events ──► API
-                                          │
-                                          └──► anomaly-events (Kafka) ──► Explainer ──► explained-events
-```
+~~~text
+Simulator ──► raw-events ──► Processor ──► processed-events ──► API
+                                  │                              │
+                                  ├──► anomaly-events ───────────┤
+                                  │             │                │
+                                  │             ▼                │
+                                  │         Explainer            │
+                                  │             │                │
+                                  └──► Qdrant    └──► explained-events
+~~~
 
-| Service | Language | Role |
-|---|---|---|
-| [simulator](./simulator) | Python | Generates synthetic network events and injects them into Kafka |
-| [processor](./processor) | Java / Spring Boot | Consumes raw events, runs Isolation Forest, publishes anomaly scores |
-| [api](./api) | Java / Spring Boot | REST API for querying alerts and device insights |
-| [explainer](./explainer) | Python | Consumes anomaly events and generates natural language explanations via Ollama |
-| [infra](./infra) | Docker / Kubernetes | Local dev stack and production manifests |
-| [shared](./shared) | JSON Schema | Shared event schema definitions |
+| Component | Technology | Responsibility |
+| --- | --- | --- |
+| [Simulator](./simulator) | Python | Produces realistic normal and anomalous network events |
+| [Processor](./processor) | Java, Spring Boot | Maintains rolling windows, trains Isolation Forest models, and scores events |
+| [Explainer](./explainer) | Python, Ollama | Turns anomaly details into human-readable explanations |
+| [API](./api) | Java, Spring Boot | Serves alerts, device statistics, and similarity results |
+| [Shared](./shared) | JSON Schema | Defines the event contracts between services |
+| [Infrastructure](./infra) | Docker Compose, Kubernetes | Runs the local stack and provides deployment manifests |
 
-## Quickstart
+## Quick start
 
 ### Prerequisites
-- Docker & Docker Compose
-- Java 21
-- Python 3.10+
-- [Ollama](https://ollama.com) with `llama3.2` pulled
 
-### Run locally
+- Docker with Docker Compose
+- Enough memory to run Kafka, Qdrant, MLflow, Ollama, and the application services
 
-```bash
-# Pull the LLM model
-ollama pull llama3.2
+Start the infrastructure, download the local language model into the Ollama container, and launch the complete stack:
 
-# Start the full stack
+~~~bash
+docker compose up -d zookeeper kafka kafka-init qdrant mlflow ollama
+docker compose exec ollama ollama pull llama3.2
 docker compose up --build
-```
+~~~
 
-Services will be available at:
-- **API** → `http://localhost:8080`
-- **Processor** (health/stats) → `http://localhost:8081`
-- **MLflow UI** → `http://localhost:5000`
-- **Qdrant UI** → `http://localhost:6333/dashboard`
-- **Kafka** → `localhost:29092`
+The simulator begins publishing events automatically. The processor needs enough observations for a device before its first model can be trained.
 
-### Run services individually
+### Local endpoints
 
-See the README in each service folder for standalone run instructions.
+| Service | URL |
+| --- | --- |
+| API health | http://localhost:8080/health |
+| Alerts | http://localhost:8080/api/v1/alerts |
+| Processor statistics | http://localhost:8081/stats |
+| MLflow | http://localhost:5000 |
+| Qdrant dashboard | http://localhost:6333/dashboard |
+| Ollama | http://localhost:11434 |
 
-## Kafka Topics
+Example:
 
-| Topic | Producer | Consumer |
-|---|---|---|
+~~~bash
+curl http://localhost:8080/health
+curl "http://localhost:8080/api/v1/alerts?page=0&limit=20"
+~~~
+
+Stop the stack with:
+
+~~~bash
+docker compose down
+~~~
+
+Add `-v` only when you also want to delete the local Qdrant, MLflow, and Ollama volumes.
+
+## Event flow
+
+| Kafka topic | Producer | Consumer |
+| --- | --- | --- |
 | `raw-events` | Simulator | Processor |
 | `processed-events` | Processor | API |
-| `anomaly-events` | Processor | Explainer, API |
+| `anomaly-events` | Processor | API and Explainer |
 | `explained-events` | Explainer | API |
 
-## Tech Stack
+The Processor trains an Isolation Forest per device using a rolling window. Events above the configured score threshold are published as anomalies. The Explainer sends those anomaly features to a local Ollama model and publishes the resulting explanation. The API keeps a bounded in-memory alert store and updates alerts when explanations arrive.
 
-- **Kafka 7.6.0** — event streaming
-- **Qdrant 1.8.4** — vector database for device embeddings
-- **MLflow 2.12.1** — model experiment tracking
-- **Ollama (Llama 3.2)** — local LLM for anomaly explanations
-- **Spring Boot 3.2.5** — Java services
-- **Python 3.10+** — Python services
+## Configuration
 
-## Project Status
+The main settings can be overridden with environment variables in [`docker-compose.yml`](./docker-compose.yml).
 
-| Component | Status |
-|---|---|
-| Simulator | ✅ Complete |
-| Processor (Isolation Forest + MLflow) | ✅ Complete |
-| Docker Compose + K8s manifests | ✅ Complete |
-| API (AlertController, DeviceController) | 🚧 In progress |
-| Explainer (Kafka consumer + Ollama client) | 🚧 In progress |
+| Variable | Default | Used by |
+| --- | --- | --- |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:29092` outside Docker | Simulator, Processor, API, Explainer |
+| `EVENT_RATE_PER_SEC` | `10` | Simulator |
+| `ANOMALY_RATIO` | `0.05` | Simulator |
+| `QDRANT_HOST` | `localhost` outside Docker | Processor, API |
+| `QDRANT_PORT` | `6334` | Processor, API |
+| `MLFLOW_TRACKING_URI` | `http://localhost:5000` | Processor |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Explainer |
+| `OLLAMA_MODEL` | `llama3.2` | Explainer |
+
+Anomaly model parameters live in [`processor/src/main/resources/application.yml`](./processor/src/main/resources/application.yml).
+
+## Run tests
+
+The services can be tested independently:
+
+~~~bash
+cd simulator
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest tests
+~~~
+
+~~~bash
+cd processor
+./gradlew test
+~~~
+
+~~~bash
+cd api
+./gradlew test
+~~~
+
+~~~bash
+cd explainer
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest tests
+~~~
+
+## Project status
+
+The core simulator, processor, API, and explainer implementations are present. This is still a development prototype:
+
+- Alerts are stored in memory and disappear when the API restarts.
+- The included traffic is synthetic, not captured from a production network.
+- The Kubernetes manifests need production hardening, secrets management, ingress, and persistent storage.
+- Full-stack integration and load testing remain useful next steps.
